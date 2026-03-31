@@ -1,0 +1,468 @@
+[
+  {
+    "id": "tab-example",
+    "type": "tab",
+    "label": "Example",
+    "disabled": false,
+    "info": "Hello-world reference flow."
+  },
+  {
+    "id": "tab-orchestration",
+    "type": "tab",
+    "label": "Orchestration",
+    "disabled": false,
+    "info": "Main orchestration flow"
+  },
+  {
+    "id": "tab-error-handling",
+    "type": "tab",
+    "label": "Error Handling",
+    "disabled": false,
+    "info": "Compensation flows"
+  },
+  {
+    "id": "tab-admin",
+    "type": "tab",
+    "label": "Admin",
+    "disabled": false,
+    "info": "Health and trace endpoints"
+  },
+  {
+    "id": "example-http-in",
+    "type": "http in",
+    "z": "tab-example",
+    "name": "GET /hello",
+    "url": "/hello",
+    "method": "get",
+    "x": 140,
+    "y": 80,
+    "wires": [["example-fn"]]
+  },
+  {
+    "id": "example-fn",
+    "type": "function",
+    "z": "tab-example",
+    "name": "Say hello",
+    "func": "msg.payload = { message: 'Hello from Node-RED!' };\nreturn msg;",
+    "outputs": 1,
+    "x": 320,
+    "y": 80,
+    "wires": [["example-http-out"]]
+  },
+  {
+    "id": "example-http-out",
+    "type": "http response",
+    "z": "tab-example",
+    "name": "HTTP Response",
+    "statusCode": "200",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "x": 520,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "orch-intake",
+    "type": "http in",
+    "z": "tab-orchestration",
+    "name": "POST /order",
+    "url": "/order",
+    "method": "post",
+    "x": 120,
+    "y": 80,
+    "wires": [["orch-init-context"]]
+  },
+  {
+    "id": "orch-init-context",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Init correlation & trace",
+    "func": "const { v4: uuidv4 } = global.get('uuid') || {};\n\n// Store original HTTP request for response later\nmsg._res = msg.res;\nmsg._req = msg.req;\n\n// Initialize trace array\nmsg.trace = [];\nmsg.startTime = Date.now();\n\n// Preserve raw payload\nmsg.orderPayload = msg.payload;\n\nreturn msg;",
+    "outputs": 1,
+    "x": 310,
+    "y": 80,
+    "wires": [["orch-router"]]
+  },
+  {
+    "id": "orch-router",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Content-Based Router",
+    "func": "// EIP: Content-Based Router\n// Routes message based on orderType field\nconst payload = msg.payload || {};\nconst contentType = msg.req && msg.req.headers && msg.req.headers['content-type'] || '';\n\nlet orderType = payload.orderType || payload.order_type || payload.type || 'standard';\n\n// Detect B2B from content-type\nif (contentType.includes('text/xml') || contentType.includes('application/xml')) {\n    orderType = 'b2b';\n}\n\nmsg.orderType = orderType.toLowerCase();\nnode.log('Routing order type: ' + msg.orderType);\n\n// Route: 0 = standard, 1 = express, 2 = b2b\nif (msg.orderType === 'express') return [null, msg, null];\nif (msg.orderType === 'b2b') return [null, null, msg];\nreturn [msg, null, null];",
+    "outputs": 3,
+    "x": 520,
+    "y": 80,
+    "wires": [
+      ["orch-translate-standard"],
+      ["orch-translate-express"],
+      ["orch-translate-b2b"]
+    ]
+  },
+  {
+    "id": "orch-translate-standard",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Translate: Standard → Canonical",
+    "func": "// EIP: Message Translator — normalize to canonical schema\nconst p = msg.payload;\nmsg.canonicalOrder = {\n    orderType: 'standard',\n    customerId: p.customerId || p.customer_id || 'unknown',\n    items: p.items || [],\n    totalAmount: p.totalAmount || p.total || 0,\n    currency: p.currency || 'USD',\n    raw: p\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 760,
+    "y": 40,
+    "wires": [["orch-call-order-service"]]
+  },
+  {
+    "id": "orch-translate-express",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Translate: Express → Canonical",
+    "func": "// EIP: Message Translator — normalize mobile/express format\nconst p = msg.payload;\nmsg.canonicalOrder = {\n    orderType: 'express',\n    customerId: p.cust_id || p.customerId || 'unknown',\n    items: p.items || (p.item ? [p.item] : []),\n    totalAmount: p.amt || p.totalAmount || 0,\n    currency: p.cur || p.currency || 'USD',\n    raw: p\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 760,
+    "y": 80,
+    "wires": [["orch-call-order-service"]]
+  },
+  {
+    "id": "orch-translate-b2b",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Translate: B2B/XML → Canonical",
+    "func": "// EIP: Message Translator — normalize B2B/EDI format\nconst p = msg.payload;\n// XML may have been parsed or be a string\nconst data = (typeof p === 'object') ? p : {};\nmsg.canonicalOrder = {\n    orderType: 'b2b',\n    customerId: data.customerId || data.buyer || 'b2b-client',\n    items: data.items || data.lineItems || [],\n    totalAmount: data.totalAmount || data.amount || 0,\n    currency: data.currency || 'USD',\n    raw: p\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 760,
+    "y": 120,
+    "wires": [["orch-call-order-service"]]
+  },
+  {
+    "id": "orch-call-order-service",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Prepare order creation",
+    "func": "const orderUrl = env.get('ORDER_URL') || 'http://order-service:3001';\n\nmsg.method = 'POST';\nmsg.url = orderUrl + '/orders';\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    ...msg.canonicalOrder,\n    orderType: msg.orderType\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 1000,
+    "y": 80,
+    "wires": [["orch-http-order-service"]]
+  },
+  {
+    "id": "orch-http-order-service",
+    "type": "http request",
+    "z": "tab-orchestration",
+    "name": "Call Order Service",
+    "method": "use",
+    "ret": "obj",
+    "url": "",
+    "x": 1200,
+    "y": 80,
+    "wires": [["orch-check-order-result"]]
+  },
+  {
+    "id": "orch-check-order-result",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Check order result",
+    "func": "const body = msg.payload;\nconst statusCode = msg.statusCode;\n\nif (statusCode !== 201 || !body.orderId) {\n    msg.errorStep = 'order';\n    msg.errorReason = body.error || 'Order creation failed';\n    return [null, msg];\n}\n\n// EIP: Correlation Identifier — carry correlationId through entire flow\nmsg.orderId = body.orderId;\nmsg.correlationId = body.correlationId;\nmsg.trace = msg.trace || [];\n\nreturn [msg, null];",
+    "outputs": 2,
+    "x": 1400,
+    "y": 80,
+    "wires": [["orch-prepare-payment"], ["orch-build-failed-response"]]
+  },
+  {
+    "id": "orch-prepare-payment",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Prepare payment request",
+    "func": "const paymentUrl = env.get('PAYMENT_URL') || 'http://payment-service:3002';\n\nmsg._paymentStart = Date.now();\nmsg.method = 'POST';\nmsg.url = paymentUrl + '/payment/authorize';\nmsg.headers = {\n    'Content-Type': 'application/json',\n    'X-Correlation-Id': msg.correlationId\n};\nmsg.payload = {\n    orderId: msg.orderId,\n    correlationId: msg.correlationId,\n    amount: msg.canonicalOrder ? msg.canonicalOrder.totalAmount : 0,\n    currency: msg.canonicalOrder ? msg.canonicalOrder.currency : 'USD'\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 200,
+    "y": 220,
+    "wires": [["orch-http-payment"]]
+  },
+  {
+    "id": "orch-http-payment",
+    "type": "http request",
+    "z": "tab-orchestration",
+    "name": "Call Payment Service",
+    "method": "use",
+    "ret": "obj",
+    "url": "",
+    "x": 420,
+    "y": 220,
+    "wires": [["orch-check-payment-result"]]
+  },
+  {
+    "id": "orch-check-payment-result",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Check payment result",
+    "func": "const body = msg.payload;\nconst durationMs = Date.now() - (msg._paymentStart || Date.now());\n\nif (body.status === 'authorized') {\n    msg.transactionId = body.transactionId;\n    msg.trace.push({ step: 'payment', status: 'success', durationMs });\n    return [msg, null];\n} else {\n    msg.trace.push({ step: 'payment', status: 'failed', durationMs });\n    msg.errorStep = 'payment';\n    msg.errorReason = body.reason || 'Payment rejected';\n    return [null, msg];\n}",
+    "outputs": 2,
+    "x": 640,
+    "y": 220,
+    "wires": [["orch-prepare-inventory"], ["orch-build-failed-response"]]
+  },
+  {
+    "id": "orch-prepare-inventory",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Prepare inventory request",
+    "func": "const inventoryUrl = env.get('INVENTORY_URL') || 'http://inventory-service:3003';\n\nmsg._inventoryStart = Date.now();\nmsg.method = 'POST';\nmsg.url = inventoryUrl + '/inventory/reserve';\nmsg.headers = {\n    'Content-Type': 'application/json',\n    'X-Correlation-Id': msg.correlationId\n};\nmsg.payload = {\n    orderId: msg.orderId,\n    correlationId: msg.correlationId,\n    items: msg.canonicalOrder ? msg.canonicalOrder.items : []\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 860,
+    "y": 220,
+    "wires": [["orch-http-inventory"]]
+  },
+  {
+    "id": "orch-http-inventory",
+    "type": "http request",
+    "z": "tab-orchestration",
+    "name": "Call Inventory Service",
+    "method": "use",
+    "ret": "obj",
+    "url": "",
+    "x": 1080,
+    "y": 220,
+    "wires": [["orch-check-inventory-result"]]
+  },
+  {
+    "id": "orch-check-inventory-result",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Check inventory result",
+    "func": "const body = msg.payload;\nconst durationMs = Date.now() - (msg._inventoryStart || Date.now());\n\nif (body.status === 'reserved') {\n    msg.reservationId = body.reservationId;\n    msg.trace.push({ step: 'inventory', status: 'success', durationMs });\n    return [msg, null];\n} else {\n    msg.trace.push({ step: 'inventory', status: 'failed', durationMs });\n    msg.errorStep = 'inventory';\n    msg.errorReason = body.reason || 'Inventory unavailable';\n    return [null, msg];\n}",
+    "outputs": 2,
+    "x": 1300,
+    "y": 220,
+    "wires": [["orch-prepare-notification"], ["comp-refund-payment"]]
+  },
+  {
+    "id": "orch-prepare-notification",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Prepare notification request",
+    "func": "const notificationUrl = env.get('NOTIFICATION_URL') || 'http://notification-service:3004';\n\nmsg._notificationStart = Date.now();\nmsg.method = 'POST';\nmsg.url = notificationUrl + '/notification/send';\nmsg.headers = {\n    'Content-Type': 'application/json',\n    'X-Correlation-Id': msg.correlationId\n};\nmsg.payload = {\n    orderId: msg.orderId,\n    correlationId: msg.correlationId,\n    type: 'order_confirmed',\n    message: 'Your order has been confirmed and payment processed.'\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 200,
+    "y": 360,
+    "wires": [["orch-http-notification"]]
+  },
+  {
+    "id": "orch-http-notification",
+    "type": "http request",
+    "z": "tab-orchestration",
+    "name": "Call Notification Service",
+    "method": "use",
+    "ret": "obj",
+    "url": "",
+    "x": 420,
+    "y": 360,
+    "wires": [["orch-check-notification-result"]]
+  },
+  {
+    "id": "orch-check-notification-result",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Check notification result",
+    "func": "const body = msg.payload;\nconst durationMs = Date.now() - (msg._notificationStart || Date.now());\n\nif (body.status === 'sent') {\n    msg.trace.push({ step: 'notification', status: 'success', durationMs });\n    return [msg, null];\n} else {\n    msg.trace.push({ step: 'notification', status: 'failed', durationMs });\n    msg.errorStep = 'notification';\n    msg.errorReason = 'Notification failed';\n    return [null, msg];\n}",
+    "outputs": 2,
+    "x": 640,
+    "y": 360,
+    "wires": [["orch-build-success-response"], ["comp-release-inventory"]]
+  },
+  {
+    "id": "orch-build-success-response",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Build final response",
+    "func": "msg.statusCode = 200;\nmsg.payload = {\n    orderId: msg.orderId,\n    correlationId: msg.correlationId,\n    status: 'completed',\n    trace: msg.trace || []\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 860,
+    "y": 360,
+    "wires": [["orch-http-response"]]
+  },
+  {
+    "id": "orch-build-failed-response",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Build failed response",
+    "func": "msg.statusCode = 200;\nmsg.payload = {\n    orderId: msg.orderId || null,\n    correlationId: msg.correlationId || null,\n    status: 'failed',\n    reason: msg.errorReason || 'Unknown error',\n    trace: msg.trace || []\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 1600,
+    "y": 80,
+    "wires": [["orch-http-response"]]
+  },
+  {
+    "id": "orch-http-response",
+    "type": "http response",
+    "z": "tab-orchestration",
+    "name": "Return orchestration result",
+    "statusCode": "",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "x": 1100,
+    "y": 360,
+    "wires": []
+  },
+  {
+    "id": "comp-release-inventory",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Compensation: Release Inventory",
+    "func": "// EIP: Compensation — reverse of inventory reserve\nconst inventoryUrl = env.get('INVENTORY_URL') || 'http://inventory-service:3003';\n\nmsg.method = 'POST';\nmsg.url = inventoryUrl + '/inventory/release';\nmsg.headers = {\n    'Content-Type': 'application/json',\n    'X-Correlation-Id': msg.correlationId\n};\nmsg.payload = {\n    orderId: msg.orderId,\n    correlationId: msg.correlationId,\n    reservationId: msg.reservationId\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 900,
+    "y": 440,
+    "wires": [["comp-http-release-inventory"]]
+  },
+  {
+    "id": "comp-http-release-inventory",
+    "type": "http request",
+    "z": "tab-orchestration",
+    "name": "POST /inventory/release",
+    "method": "use",
+    "ret": "obj",
+    "url": "",
+    "x": 1120,
+    "y": 440,
+    "wires": [["comp-after-release"]]
+  },
+  {
+    "id": "comp-after-release",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Log inventory release",
+    "func": "msg.trace.push({ step: 'compensation:inventory-release', status: 'success' });\nreturn msg;",
+    "outputs": 1,
+    "x": 1340,
+    "y": 440,
+    "wires": [["comp-refund-payment"]]
+  },
+  {
+    "id": "comp-refund-payment",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Compensation: Refund Payment",
+    "func": "// EIP: Compensation — reverse of payment authorize\nconst paymentUrl = env.get('PAYMENT_URL') || 'http://payment-service:3002';\n\nmsg.method = 'POST';\nmsg.url = paymentUrl + '/payment/refund';\nmsg.headers = {\n    'Content-Type': 'application/json',\n    'X-Correlation-Id': msg.correlationId\n};\nmsg.payload = {\n    orderId: msg.orderId,\n    correlationId: msg.correlationId,\n    transactionId: msg.transactionId\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 200,
+    "y": 500,
+    "wires": [["comp-http-refund"]]
+  },
+  {
+    "id": "comp-http-refund",
+    "type": "http request",
+    "z": "tab-orchestration",
+    "name": "POST /payment/refund",
+    "method": "use",
+    "ret": "obj",
+    "url": "",
+    "x": 420,
+    "y": 500,
+    "wires": [["comp-build-compensated-response"]]
+  },
+  {
+    "id": "comp-build-compensated-response",
+    "type": "function",
+    "z": "tab-orchestration",
+    "name": "Build compensated response",
+    "func": "msg.trace.push({ step: 'compensation:payment-refund', status: 'success' });\n\nmsg.statusCode = 200;\nmsg.payload = {\n    orderId: msg.orderId || null,\n    correlationId: msg.correlationId || null,\n    status: 'compensated',\n    reason: msg.errorReason || 'Downstream failure',\n    trace: msg.trace || []\n};\nreturn msg;",
+    "outputs": 1,
+    "x": 660,
+    "y": 500,
+    "wires": [["orch-http-response"]]
+  },
+  {
+    "id": "eh-dlq-node",
+    "type": "function",
+    "z": "tab-error-handling",
+    "name": "Dead Letter Channel",
+    "func": "// EIP: Dead Letter Channel\n// Captures unrecoverable messages for manual inspection\nconst deadLetters = global.get('deadLetters') || [];\ndeadLetters.push({\n    timestamp: new Date().toISOString(),\n    correlationId: msg.correlationId,\n    orderId: msg.orderId,\n    error: msg.errorReason || 'unknown',\n    payload: msg.payload\n});\nglobal.set('deadLetters', deadLetters);\nnode.warn('Dead letter captured: ' + msg.correlationId);\nreturn msg;",
+    "outputs": 1,
+    "x": 220,
+    "y": 120,
+    "wires": [["eh-debug"]]
+  },
+  {
+    "id": "eh-debug",
+    "type": "debug",
+    "z": "tab-error-handling",
+    "name": "Log dead letter",
+    "active": true,
+    "tosidebar": true,
+    "console": true,
+    "complete": "payload",
+    "x": 460,
+    "y": 120,
+    "wires": []
+  },
+  {
+    "id": "admin-health-in",
+    "type": "http in",
+    "z": "tab-admin",
+    "name": "GET /health",
+    "url": "/health",
+    "method": "get",
+    "x": 140,
+    "y": 80,
+    "wires": [["admin-health-fn"]]
+  },
+  {
+    "id": "admin-health-fn",
+    "type": "function",
+    "z": "tab-admin",
+    "name": "Health response",
+    "func": "msg.payload = { status: 'ok', service: 'node-red' };\nmsg.statusCode = 200;\nreturn msg;",
+    "outputs": 1,
+    "x": 320,
+    "y": 80,
+    "wires": [["admin-health-out"]]
+  },
+  {
+    "id": "admin-health-out",
+    "type": "http response",
+    "z": "tab-admin",
+    "name": "HTTP Response",
+    "statusCode": "200",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "x": 520,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "admin-trace-in",
+    "type": "http in",
+    "z": "tab-admin",
+    "name": "GET /trace/:orderId",
+    "url": "/trace/:orderId",
+    "method": "get",
+    "x": 160,
+    "y": 200,
+    "wires": [["admin-trace-fn"]]
+  },
+  {
+    "id": "admin-trace-fn",
+    "type": "function",
+    "z": "tab-admin",
+    "name": "Return dead letters",
+    "func": "const deadLetters = global.get('deadLetters') || [];\nconst orderId = msg.req.params.orderId;\nconst found = deadLetters.filter(d => d.orderId === orderId);\nmsg.payload = { orderId, deadLetters: found };\nmsg.statusCode = 200;\nreturn msg;",
+    "outputs": 1,
+    "x": 380,
+    "y": 200,
+    "wires": [["admin-trace-out"]]
+  },
+  {
+    "id": "admin-trace-out",
+    "type": "http response",
+    "z": "tab-admin",
+    "name": "HTTP Response",
+    "statusCode": "200",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "x": 580,
+    "y": 200,
+    "wires": []
+  }
+]
