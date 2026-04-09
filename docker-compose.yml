@@ -1,16 +1,12 @@
 version: "3.8"
 
-# ─────────────────────────────────────────────────────────────────────
 # EAI Capstone — Docker Compose
-#
 # Host ports are configurable via .env file (copy from .env.example).
 # Internal service-to-service communication always uses fixed internal ports
 # and Docker service names as hostnames.
-#
 # Start:   docker-compose up -d --build
 # Stop:    docker-compose down
 # Rebuild: docker-compose up -d --build --force-recreate
-# ─────────────────────────────────────────────────────────────────────
 
 services:
   # ── Node-RED Orchestration & Integration Layer ──────────────────────
@@ -22,6 +18,7 @@ services:
       - "${NODERED_HOST_PORT:-1880}:1880"
     volumes:
       - nodered_data:/data
+      - ./flows.json:/data/flows.json
     environment:
       ORDER_URL: http://order-service:3001
       PAYMENT_URL: http://payment-service:3002
